@@ -15,133 +15,224 @@ javascript:(function(){
 
     let step = 0;
     let lastTime = Date.now();
+    let lastProgress = Date.now();
 
-    function runBot() {
+    function W(){ try { return iframe.contentWindow; } catch(e){ return null; } }
+    function D(){ try { return iframe.contentWindow.document; } catch(e){ return null; } }
+
+    function fire(el){
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    }
+    function visible(d, sel){
+        return Array.from(d.querySelectorAll(sel)).filter(el => el.offsetParent !== null);
+    }
+
+    // ====== تسجيل خروج صامت: ينفّذ خروج الموقع الحقيقي لكن يمنع تحديث الصفحة ======
+    function installSoftLogout(w){
+        if (!w || w.__softLogoutInstalled) return;
+        w.__softLogoutInstalled = true;
+
+        // نذكر تبويب الدخول الحالي (ضيف #l1 أو عضو #l2) عشان نرجعه بعد الخروج
         try {
-            let doc = iframe.contentWindow.document;
+            w.__botLoginTab = (w.$ && w.$('#l2').length && w.$('#l2').is(':visible')) ? '#l2' : '#l1';
+        } catch(e){ w.__botLoginTab = '#l1'; }
+
+        var origLogout = (typeof w.logout === 'function') ? w.logout : null;
+
+        w.logout = function(){
+            // 1) حجب التنقل مؤقتاً (reload / replace / assign) حتى لا تتحدث الصفحة
+            var oReload = w.location.reload, oReplace = w.location.replace, oAssign = w.location.assign;
+            var locked = true;
+            try { w.location.reload  = function(){ if (locked) return false; }; } catch(e){}
+            try { w.location.replace = function(){ if (locked) return false; }; } catch(e){}
+            try { w.location.assign = function(){ if (locked) return false; }; } catch(e){}
+
+            // 2) تنفيذ خروج الموقع الأصلي (يتم إلغاء الجلسة من السيرفر) لكن بدون تنقل
+            try { if (origLogout) origLogout(); } catch(e){}
+
+            // 3) تأمين إضافي: إنهاء الجلسة محلياً وفصل السوكت
+            try {
+                var m = w.TH_CHAT_RECONNECT_MANAGER_INSTANCE;
+                if (m && m.core && m.core.markIntentionalClose) m.core.markIntentionalClose(true);
+            } catch(e){}
+            try { if (typeof w.TH_MARK_INTENTIONAL_DISCONNECT_TIGERHOST === 'function') w.TH_MARK_INTENTIONAL_DISCONNECT_TIGERHOST(true); } catch(e){}
+            try { if (w.x_x && typeof w.x_x.disconnect === 'function') w.x_x.disconnect(); } catch(e){}
+            try { if (w.x_x && typeof w.x_x.close === 'function') w.x_x.close(); } catch(e){}
+            try { w.MY_T = ''; } catch(e){}
+            try { w.TIGERHOST = null; } catch(e){}
+            try { w.M_ROOM = null; } catch(e){}
+
+            // 4) إرجاع التنقل لطبيعته + إظهار شاشة الدخول + إغلاق لوحة الضبط
+            setTimeout(function(){
+                locked = false;
+                try { w.location.reload  = oReload; } catch(e){}
+                try { w.location.replace = oReplace; } catch(e){}
+                try { w.location.assign = oAssign; } catch(e){}
+                try {
+                    if (w.$) {
+                        w.$('.nav-tabs a[href="' + (w.__botLoginTab || '#l1') + '"]').tab('show');
+                    }
+                } catch(e){}
+                // إغلاق لوحة الضبط إن كانت مفتوحة
+                try {
+                    var d = w.document;
+                    var closePanel = d.querySelector('#dpnl .fa-close') || d.querySelector('#dpnl .thMorePaneBackBtn');
+                    if (closePanel) closePanel.click();
+                } catch(e){}
+            }, 1000);
+        };
+    }
+
+    function runBot(){
+        try {
+            let w = W();
+            let d = D();
+            if (!w || !d) return;
             let now = Date.now();
 
-            // 1. الانتظار 5 ثوانٍ لضمان ظهور الصفحة، ثم الضغط على زر العين (التخفي)
+            // 0. الانتظار 5 ثوانٍ حتى يكتمل تحميل الصفحة ثم التخفي + تجهيز الخروج الصامت (مرة واحدة)
             if (step === 0 && (now - lastTime > 5000)) {
-                let eyeBtn = doc.querySelector('.fa-eye') || doc.querySelector('#stealth-btn'); 
-                if (eyeBtn && eyeBtn.offsetParent !== null) {
-                    eyeBtn.click();
-                }
-                step = 1;
+                let eyeBtn = d.querySelector('.fa-eye') || d.querySelector('#stealth-btn');
+                if (eyeBtn && eyeBtn.offsetParent !== null) eyeBtn.click();
+                installSoftLogout(w);
+                step = 2;
                 lastTime = now;
-            } 
-            // 2. الانتظار نصف ثانية (500 ملي ثانية) ثم الضغط على زر الدخول
-            else if (step === 1 && (now - lastTime > 500)) {
-                let loginBtn = Array.from(doc.querySelectorAll('.th-login-btn')).find(el => el.offsetParent !== null);
+                lastProgress = now;
+            }
+            // 2. الضغط على زر الدخول
+            else if (step === 2 && (now - lastTime > 500)) {
+                let loginBtn = Array.from(d.querySelectorAll('.th-login-btn')).find(el => el.offsetParent !== null);
                 if (loginBtn) {
                     loginBtn.click();
-                    step = 2;
-                    lastTime = now;
-                }
-            }
-            // 3. الانتظار 4 ثوانٍ بعد ضغط الدخول لضمان اكتمال تحميل الموقع
-            else if (step === 2 && (now - lastTime > 4000)) {
-                let usersBtn = doc.querySelector('.th-d0-users');
-                if (usersBtn) {
-                    usersBtn.click();
                     step = 3;
                     lastTime = now;
+                    lastProgress = now;
                 }
             }
-            // --- من هنا تبدأ السرعة القصوى ---
-            // 4. البحث عن العضوية 87
-            else if (step === 3 && (now - lastTime > 300)) {
-                let searchInput = doc.getElementById('usearch');
-                if (searchInput) {
-                    searchInput.value = "87";
-                    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    searchInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            // 3. الانتظار 4 ثوانٍ بعد الدخول ثم فتح قائمة المستخدمين
+            else if (step === 3 && (now - lastTime > 4000)) {
+                let usersBtn = d.querySelector('.th-d0-users');
+                if (usersBtn) {
+                    usersBtn.click();
                     step = 4;
                     lastTime = now;
+                    lastProgress = now;
                 }
             }
-            // 5. فتح بروفايل العضوية 87
-            else if (step === 4 && (now - lastTime > 500)) {
-                let visibleUsers = Array.from(doc.querySelectorAll('#users .uzr.uhtml')).filter(el => el.offsetParent !== null);
-                if (visibleUsers.length > 0) {
-                    visibleUsers[0].click();
+            // 4. البحث عن العضوية 87
+            else if (step === 4 && (now - lastTime > 300)) {
+                let si = d.getElementById('usearch');
+                if (si) {
+                    si.value = "87";
+                    fire(si);
                     step = 5;
                     lastTime = now;
+                    lastProgress = now;
                 }
             }
-            // 6. إغلاق بروفايل العضوية 87 (بدون نجمة)
+            // 5. فتح بروفايل 87
             else if (step === 5 && (now - lastTime > 500)) {
-                let closeBtn = doc.querySelector('#upro .fa-times');
-                if (closeBtn) closeBtn.click();
-                step = 6;
+                let us = visible(d, '#users .uzr.uhtml');
+                if (us.length > 0) {
+                    us[0].click();
+                    step = 6;
+                    lastTime = now;
+                    lastProgress = now;
+                }
+            }
+            // 6. إغلاق بروفايل 87
+            else if (step === 6 && (now - lastTime > 500)) {
+                let cb = d.querySelector('#upro .fa-times');
+                if (cb) cb.click();
+                step = 7;
                 lastTime = now;
+                lastProgress = now;
             }
             // 7. حذف البحث (مسح 87)
-            else if (step === 6 && (now - lastTime > 300)) {
-                let searchInput = doc.getElementById('usearch');
-                if (searchInput) {
-                    searchInput.value = "";
-                    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    searchInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-                    step = 7;
+            else if (step === 7 && (now - lastTime > 300)) {
+                let si = d.getElementById('usearch');
+                if (si) {
+                    si.value = "";
+                    fire(si);
+                    step = 8;
                     lastTime = now;
+                    lastProgress = now;
                 }
             }
             // 8. البحث عن العضوية 30
-            else if (step === 7 && (now - lastTime > 300)) {
-                let searchInput = doc.getElementById('usearch');
-                if (searchInput) {
-                    searchInput.value = "30";
-                    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    searchInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-                    step = 8;
-                    lastTime = now;
-                }
-            }
-            // 9. فتح بروفايل العضوية 30
-            else if (step === 8 && (now - lastTime > 500)) {
-                let visibleUsers = Array.from(doc.querySelectorAll('#users .uzr.uhtml')).filter(el => el.offsetParent !== null);
-                if (visibleUsers.length > 0) {
-                    visibleUsers[0].click();
+            else if (step === 8 && (now - lastTime > 300)) {
+                let si = d.getElementById('usearch');
+                if (si) {
+                    si.value = "30";
+                    fire(si);
                     step = 9;
                     lastTime = now;
+                    lastProgress = now;
                 }
             }
-            // 10. إغلاق بروفايل العضوية 30 (بدون نجمة)
+            // 9. فتح بروفايل 30
             else if (step === 9 && (now - lastTime > 500)) {
-                let closeBtn = doc.querySelector('#upro .fa-times');
-                if (closeBtn) closeBtn.click();
-                step = 10;
-                lastTime = now;
-            }
-            // 11. فتح الإعدادات 
-            else if (step === 10 && (now - lastTime > 300)) {
-                let settingsBtn = doc.querySelector('.th-d0-settings');
-                if (settingsBtn) {
-                     settingsBtn.click();
+                let us = visible(d, '#users .uzr.uhtml');
+                if (us.length > 0) {
+                    us[0].click();
+                    step = 10;
+                    lastTime = now;
+                    lastProgress = now;
                 }
+            }
+            // 10. إغلاق بروفايل 30
+            else if (step === 10 && (now - lastTime > 500)) {
+                let cb = d.querySelector('#upro .fa-times');
+                if (cb) cb.click();
                 step = 11;
                 lastTime = now;
+                lastProgress = now;
             }
-            // 12. تسجيل الخروج 
+            // 11. فتح الإعدادات
             else if (step === 11 && (now - lastTime > 300)) {
-                let logoutBtn = doc.querySelector('label.SERT');
-                if (logoutBtn) {
-                    logoutBtn.click();
+                let sb = d.querySelector('.th-d0-settings');
+                if (sb) {
+                    sb.click();
+                    step = 12;
+                    lastTime = now;
+                    lastProgress = now;
                 }
-                step = 12;
-                lastTime = now;
             }
-            // 13. إعادة الدورة بعد ثانية واحدة من الخروج ليكون الموقع جاهزاً مجدداً
-            else if (step === 12 && (now - lastTime > 1000)) {
-                step = 0;
+            // 12. تسجيل خروج صامت (بدون تحديث الصفحة)
+            else if (step === 12 && (now - lastTime > 300)) {
+                let lb = d.querySelector('label.SERT');
+                if (lb) {
+                    lb.click();            // سينفذ logout المعدل (خروج صامت)
+                } else if (typeof w.logout === 'function') {
+                    w.logout();
+                }
+                step = 13;
                 lastTime = now;
+                lastProgress = now;
             }
-        } catch(e) {
-        }
+            // 13. العودة لشاشة الدخول ثم بدء دورة جديدة بدون إعادة تحميل الصفحة
+            else if (step === 13 && (now - lastTime > 1500)) {
+                step = 2;
+                lastTime = now;
+                lastProgress = now;
+            }
+        } catch(e) {}
     }
 
-    // سرعة الفحص عالية جداً (كل 100 ملي ثانية) لضمان تنفيذ الخطوات السريعة فوراً
+    // حارس أمان: لو علق البوت بنفس الخطوة 30 ثانية يتم إعادة تحميل الإطار والبدء من جديد
+    setInterval(function(){
+        if (Date.now() - lastProgress > 30000) {
+            try {
+                iframe.src = iframe.src;   // إعادة تحميل
+            } catch(e){}
+            step = 0;
+            lastTime = Date.now();
+            lastProgress = Date.now();
+        }
+    }, 2000);
+
+    // سرعة الفحص عالية (كل 100 ملي ثانية)
     setInterval(runBot, 100);
-    alert('تم تشغيل الإطار الوهمي مع ميزة التخفي!');
+    alert('تم تشغيل البوت مع تسجيل الخروج الصامت (بدون تحديث الصفحة)!');
 })();
